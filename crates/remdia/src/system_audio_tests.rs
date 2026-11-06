@@ -385,7 +385,11 @@ fn system_decoders_match_the_certified_fixture_timeline() {
                             "{name}: discontinuous PCM at {pts_us} after {end}"
                         );
                     } else {
-                        assert_eq!(pts_us, 0, "{name}");
+                        // The AAC fixture has a 1024-sample/48-kHz edit origin.
+                        // Raw decoder output retains its signed preroll timestamp;
+                        // only Session's playback boundary trims it to zero.
+                        let origin = if name == "av.mp4" { -21_333 } else { 0 };
+                        assert_eq!(pts_us, origin, "{name}");
                     }
                     previous =
                         Some(pts_us + (samples as u128 * 1_000_000 / u128::from(rate)) as i64);
@@ -482,7 +486,11 @@ fn windows_decode_fixture(name: &str, expected: usize) {
                             "{name}: PCM gap at {pts_us} after {end}"
                         );
                     } else {
-                        assert_eq!(pts_us, 0, "{name}");
+                        // The AAC fixture has a 1024-sample/48-kHz edit origin.
+                        // Raw decoder output retains its signed preroll timestamp;
+                        // only Session's playback boundary trims it to zero.
+                        let origin = if name == "av.mp4" { -21_333 } else { 0 };
+                        assert_eq!(pts_us, origin, "{name}");
                     }
                     previous =
                         Some(pts_us + (samples as u128 * 1_000_000 / u128::from(rate)) as i64);
@@ -737,4 +745,50 @@ fn windows_gapless_mp3_preserves_count_and_signal_alignment_without_lame() {
             assert!(tail > 0.01, "lost the final signal");
         }
     }
+}
+
+#[test]
+#[ignore = "requires staged system audio/demux plugins"]
+fn compatibility_aac_playback_trims_negative_edit_preroll() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+            assert!(header.len() < 8192);
+        }
+        let bytes = include_bytes!("../../../tests/fixtures/av.mp4");
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        )
+        .unwrap();
+        stream.write_all(bytes).unwrap();
+    });
+    let engine = engine();
+    let mut request = crate::Request::playback(format!("http://{address}/av.mp4"));
+    request.task = crate::Task::Audio;
+    let mut session = unsafe { engine.open(request, Cancellation::default()) }.unwrap();
+    let first = session.read().unwrap().unwrap();
+    let FrameInfo::Audio { pts_us, .. } = first.info() else {
+        panic!("expected PCM");
+    };
+    assert!(
+        (0..=21).contains(pts_us),
+        "playback must trim the negative AAC preroll: {pts_us}"
+    );
+    assert!(session.metrics().preroll_frames_discarded > 0);
+    worker.join().unwrap();
 }

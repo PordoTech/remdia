@@ -98,6 +98,7 @@ impl Component for Capabilities {
     }
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn mime(path: &str) -> Result<&'static str> {
     Ok(match container(path)? {
         "mp4" => "video/mp4",

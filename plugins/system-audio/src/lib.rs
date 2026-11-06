@@ -10,7 +10,7 @@ mod apple_resample;
 #[cfg(target_os = "macos")]
 mod audio_toolbox_sys;
 mod capabilities;
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, target_os = "macos"))]
 mod mix;
 #[cfg(any(windows, target_os = "macos"))]
 mod opus;

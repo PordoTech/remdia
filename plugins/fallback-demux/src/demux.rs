@@ -22,6 +22,7 @@ pub struct Demux {
     keyframe_gate: Option<u32>,
     keys: BTreeMap<u32, Vec<(i64, i64)>>,
     scanned: BTreeMap<u32, i64>,
+    reader_invalid: bool,
 }
 fn nearby_keyframe(keys: &[(i64, i64)], target: i64) -> Option<i64> {
     keys.iter()
@@ -254,6 +255,7 @@ impl Demux {
             keyframe_gate: None,
             keys: BTreeMap::new(),
             scanned: BTreeMap::new(),
+            reader_invalid: false,
         })
     }
 }
@@ -266,24 +268,28 @@ impl Demux {
             FormatOptions::default(),
             MetadataOptions::default(),
         )?;
+        self.reader_invalid = false;
         Ok(())
     }
     fn seek_at(&mut self, track: u32, time: i64) -> Result<()> {
-        // Recreate the reader before random access. In Symphonia 0.6 MP4,
-        // reaching EOF consumes the pending atom needed by subsequent reads.
-        self.reopen()?;
-        if self
-            .format
-            .seek(
-                SeekMode::Accurate,
-                SeekTo::Time {
-                    time: Time::from_micros(time.max(0)),
-                    track_id: Some(track),
-                },
-            )
-            .is_err()
-        {
+        // Normal seeks retain parsed indexes and the source cache. Rebuild only
+        // after an interrupted read/seek or for readers whose EOF state cannot reset.
+        if self.reader_invalid || (self.ended && self.format.format_info().short_name != "isomp4") {
             self.reopen()?;
+        }
+        let to = || SeekTo::Time {
+            time: Time::from_micros(time.max(0)),
+            track_id: Some(track),
+        };
+        if self.format.seek(SeekMode::Accurate, to()).is_err() {
+            self.reader_invalid = true;
+            self.control.check()?;
+            self.reopen()?;
+            // Unsupported seeks keep the historical safe decode-from-start fallback.
+            if self.format.seek(SeekMode::Accurate, to()).is_err() {
+                self.control.check()?;
+                self.reopen()?;
+            }
         }
         Ok(())
     }
@@ -298,6 +304,25 @@ impl Demux {
             .find(|t| t.index == id as usize)
             .context("unknown seek track")?
             .clone();
+        if self.format.format_info().short_name == "isomp4" {
+            if self.reader_invalid {
+                self.reopen()?;
+            }
+            let result = self.format.seek(
+                SeekMode::Coarse,
+                SeekTo::Time {
+                    time: Time::from_micros(target.max(0)),
+                    track_id: Some(id),
+                },
+            );
+            if result.is_ok() {
+                return Ok(());
+            }
+            self.reader_invalid = true;
+            self.control.check()?;
+            // Unsupported/missing indexes use the existing packet keyframe scan.
+            self.reopen()?;
+        }
         // Symphonia's experimental video seek locates a timestamp, not a sync
         // sample. Find a preceding random-access point without decoding frames.
         if self.scanned.get(&id).is_some_and(|p| *p >= target)
@@ -329,6 +354,9 @@ impl Demux {
             for _ in 0..100000 {
                 self.control.check()?;
                 let result = self.format.next_packet();
+                if result.is_err() {
+                    self.reader_invalid = true;
+                }
                 self.control.check()?;
                 let Some(packet) = result? else { break };
                 ensure!(
@@ -422,6 +450,9 @@ impl Component for Demux {
         }
         loop {
             let result = self.format.next_packet();
+            if result.is_err() {
+                self.reader_invalid = true;
+            }
             self.control.check()?;
             let Some(packet) = result? else {
                 self.ended = true;
@@ -505,10 +536,16 @@ impl Component for Demux {
             TrackType::Audio
         };
         let track_id = self.format.default_track(kind).map(|t| t.id);
-        if kind == TrackType::Video && target > 0 {
+        // Zero also needs a preceding sync sample: an edit origin can otherwise
+        // make accurate timestamp seeking skip the first IDR and wait a full GOP.
+        if kind == TrackType::Video {
             self.seek_video(track_id.context("no video track")?, target)?;
         } else {
-            self.reopen()?;
+            if self.reader_invalid
+                || (self.ended && self.format.format_info().short_name != "isomp4")
+            {
+                self.reopen()?;
+            }
             // Elementary MPEG audio has no packet timestamps. Accurate seeking
             // scans every intervening frame, which can wait on a progressive
             // download's missing prefix. Use byte/duration estimation remotely;

@@ -23,6 +23,10 @@ the required license notices. See `docs/linking.md` for distribution layouts.
   the license; the `--system-only` AAR omits this plugin. Windows/macOS packages
   retain their existing system SRC and do not ship this compatibility pack.
 - **Symphonia 0.6.1 (MPL-2.0)**, https://github.com/pdeljanov/Symphonia :
+  The ISO MP4 reader is maintained directly in `vendor/symphonia-format-isomp4`
+  with composition timestamps, TFDT, SIDX/STSS seeking and EOF reset fixes. Its
+  source, MPL license and `REMDIA-CHANGES.md` accompany this repository; retain
+  access to this matching modified source when redistributing SDK binaries.
   `fallback_demux` registers format/metadata readers only, for unsupported
   source/container profiles including the existing HTTP/Range adapter. ADTS,
   MPA and FLAC readers share upstream crates with decoder code, so those crates

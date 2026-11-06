@@ -4,6 +4,13 @@ Windows and macOS use one public remdia component graph for playback, images,
 metadata/artwork, thumbnails, subtitle PCM and MP3 requests. Pordo retains
 CPAL output, WGPU rendering, clocks, caching, network source policy and AI work.
 
+The compatibility HTTP source owns a bounded, per-source memory cache and read-ahead
+buffer configured by `Request.network`. These are transient byte buffers, separate
+from Pordo's persistent download/image caches. Provider authentication, signed URL
+renewal, CDN selection and quality selection remain in Pordo. The SDK parses MP4
+SIDX/STSS and composition/decode timestamps, and reuses readers for ordinary seeks.
+See `http-seeking.md` for limits and fallback behavior.
+
 | Host subsystem | remdia path |
 | --- | --- |
 | Playback | System demux or source/container compatibility reader → independent system audio/video decoder → system SRC |

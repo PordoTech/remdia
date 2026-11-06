@@ -19,3 +19,6 @@ fn create(config: &NodeConfig, control: Control) -> Result<Box<dyn Component>> {
     Ok(Box::new(demux::Demux::open(config, control)?))
 }
 remdia_graph::export_plugin!(descriptors, create);
+
+#[cfg(test)]
+mod tests;

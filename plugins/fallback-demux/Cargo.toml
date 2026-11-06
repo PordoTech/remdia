@@ -22,7 +22,7 @@ remdia-plugin-abi.workspace = true
 symphonia-core = { version = "0.6.1", features = ["exp-video-codecs"] }
 symphonia-metadata = { version = "0.6.1", default-features = false, features = ["ape", "id3v1", "id3v2"] }
 symphonia-format-caf = "0.6.1"
-symphonia-format-isomp4 = "0.6.1"
+symphonia-format-isomp4 = { path = "../../vendor/symphonia-format-isomp4" }
 symphonia-format-mkv = "0.6.1"
 symphonia-format-ogg = "0.6.1"
 symphonia-format-riff = { version = "0.6.1", default-features = false, features = ["aiff", "wav"] }

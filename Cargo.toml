@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "plugins/*"]
+exclude = ["vendor/symphonia-format-isomp4"]
 default-members = ["crates/*"]
 
 [workspace.package]

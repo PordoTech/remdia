@@ -12,8 +12,8 @@ use remdia_buffer::Reservation;
 use remdia_graph::Factory;
 pub use remdia_graph::{
     self as graph, BufferHeader, Cancellation, EdgeSpec, FrameInfo, Graph, GraphEvent, GraphSpec,
-    Interrupted, MediaBuffer, MediaInfo, NodeConfig, NodeSpec, ProviderPolicy, Rational, Request,
-    Task,
+    Interrupted, MediaBuffer, MediaInfo, NetworkOptions, NodeConfig, NodeSpec, ProviderPolicy,
+    Rational, Request, Task,
 };
 use serde_json::json;
 use std::{
@@ -318,6 +318,7 @@ impl Engine {
             plan,
             request,
             cancel,
+            metrics: SessionMetrics::default(),
             target_us: 0,
             at_end: false,
             budget: self.budget.clone(),
@@ -467,6 +468,17 @@ fn encode_pcm_mp3(
         MediaBuffer::new(header, vec![output]).with_budget(reservation),
     ))
 }
+/// Cumulative SDK work time. Excludes host audio output, GPU upload and presentation.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct SessionMetrics {
+    pub read_calls: u64,
+    pub read_work_us: u64,
+    pub seek_calls: u64,
+    pub seek_reset_us: u64,
+    pub last_seek_reset_us: u64,
+    pub frames_emitted: u64,
+    pub preroll_frames_discarded: u64,
+}
 pub struct Session {
     graph: Graph,
     info: MediaInfo,
@@ -474,6 +486,7 @@ pub struct Session {
     request: Request,
     cancel: Cancellation,
     target_us: i64,
+    metrics: SessionMetrics,
     at_end: bool,
     budget: Budget,
     registry: Registry,
@@ -491,7 +504,19 @@ impl Session {
     pub fn generation(&self) -> u64 {
         self.graph.generation()
     }
+    pub fn metrics(&self) -> &SessionMetrics {
+        &self.metrics
+    }
     pub fn seek(&mut self, target_us: i64) -> Result<u64> {
+        let start = Instant::now();
+        let result = self.seek_inner(target_us);
+        let elapsed = start.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        self.metrics.seek_calls += 1;
+        self.metrics.seek_reset_us = self.metrics.seek_reset_us.saturating_add(elapsed);
+        self.metrics.last_seek_reset_us = elapsed;
+        result
+    }
+    fn seek_inner(&mut self, target_us: i64) -> Result<u64> {
         ensure!(target_us >= 0, "negative seek");
         let at_end = self
             .info
@@ -508,6 +533,19 @@ impl Session {
         Ok(generation)
     }
     pub fn read(&mut self) -> Result<Option<Frame>> {
+        let start = Instant::now();
+        let result = self.read_inner();
+        self.metrics.read_calls += 1;
+        self.metrics.read_work_us = self
+            .metrics
+            .read_work_us
+            .saturating_add(start.elapsed().as_micros().min(u64::MAX as u128) as u64);
+        if matches!(&result, Ok(Some(_))) {
+            self.metrics.frames_emitted += 1;
+        }
+        result
+    }
+    fn read_inner(&mut self) -> Result<Option<Frame>> {
         ensure!(
             self.request.task != Task::Probe,
             "probe session does not decode"
@@ -530,6 +568,7 @@ impl Session {
                         FrameInfo::Packet { .. } => continue,
                         FrameInfo::Video { pts_us, .. } | FrameInfo::Image { pts_us, .. } => {
                             if pts_us.is_some_and(|p| p - self.info.origin_us < self.target_us) {
+                                self.metrics.preroll_frames_discarded += 1;
                                 continue;
                             }
                             if let FrameInfo::Video { pts_us, .. } | FrameInfo::Image { pts_us, .. } =
@@ -552,6 +591,7 @@ impl Session {
                                     / 1000000)
                                     .min(samples as i128) as usize;
                             if skip == samples {
+                                self.metrics.preroll_frames_discarded += 1;
                                 continue;
                             }
                             let mut header = buffer.header.clone();

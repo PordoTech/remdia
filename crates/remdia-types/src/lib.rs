@@ -41,6 +41,23 @@ pub enum ProviderPolicy {
     #[default]
     SystemPreferred,
 }
+/// Per-source HTTP memory limits; no credentials or provider-specific behavior.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkOptions {
+    pub range_bytes: usize,
+    pub read_ahead_bytes: usize,
+    pub cache_bytes: usize,
+}
+impl Default for NetworkOptions {
+    fn default() -> Self {
+        Self {
+            range_bytes: 512 * 1024,
+            read_ahead_bytes: 64 * 1024,
+            cache_bytes: 4 * 1024 * 1024,
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
     pub source: String,
@@ -55,6 +72,8 @@ pub struct Request {
     pub timeout_ms: u64,
     pub max_frame_bytes: usize,
     pub max_packet_bytes: usize,
+    #[serde(default)]
+    pub network: NetworkOptions,
 }
 impl Request {
     pub fn playback(source: impl Into<String>) -> Self {
@@ -73,6 +92,7 @@ impl Request {
             timeout_ms: 30_000,
             max_frame_bytes: 128 * 1024 * 1024,
             max_packet_bytes: 16 * 1024 * 1024,
+            network: NetworkOptions::default(),
         }
     }
     pub fn validate(&self) -> Result<()> {
@@ -97,6 +117,12 @@ impl Request {
                 && self.max_frame_bytes <= 1024 * 1024 * 1024
                 && self.max_packet_bytes > 0,
             "invalid buffer limits"
+        );
+        ensure!(
+            (4096..=8 * 1024 * 1024).contains(&self.network.range_bytes)
+                && (1..=1024 * 1024).contains(&self.network.read_ahead_bytes)
+                && self.network.cache_bytes <= 64 * 1024 * 1024,
+            "invalid HTTP memory limits"
         );
         Ok(())
     }
